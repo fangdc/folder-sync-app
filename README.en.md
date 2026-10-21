@@ -25,7 +25,7 @@ destination folder is touched.
 | Launch at login | Stays in the menu bar and keeps syncing on schedule after the window is closed |
 | Ignores system files | `.DS_Store`, `.Spotlight-V100`, `.fseventsd` and similar are skipped automatically |
 | Only changed files | Uses size + modification time, with a 2.5-second tolerance for exFAT/FAT32 |
-| Sync history | Time, result, amount of data and failure reason for each run (last 300 kept) |
+| Sync history | Time, result, data volume, failure reason and a per-file list of what was created, updated or deleted; details are not truncated (last 300 runs kept) |
 
 ### Safety by design
 
@@ -55,7 +55,7 @@ destination folder is touched.
 
 ## Installation
 
-1. Download `FolderSync-1.0.dmg` from [Releases](https://github.com/fangdc/folder-sync-app/releases/latest),
+1. Download `FolderSync-1.1.0.dmg` from [Releases](https://github.com/fangdc/folder-sync-app/releases/latest),
    open it, and drag **FolderSync.app** into the Applications folder.
 
 2. The app is not signed with an Apple Developer certificate, so macOS blocks it the
@@ -107,6 +107,7 @@ Full Disk Access**.
 | Preview Changes | Read-only list of files that would be copied or deleted |
 | Sync Now | Starts the sync |
 | View All Records | Opens the full sync history |
+| Sync Details | Expands a record to list every file created, updated or deleted |
 
 **Selecting multiple tasks:** hold `⌘` to add or remove tasks, hold `⇧` to select a
 range; with several selected, right-click to "Sync Selected Tasks" or delete them all.
@@ -154,6 +155,18 @@ while a sync is running.
 - Deleting a task asks for confirmation and removes only the task and its history;
   files that were already synced are left alone.
 
+## Sync history
+
+After each run, **Recent Records** on the task detail page shows its time, result and
+data volume. Click **View All Records** to open the full history.
+
+- On records with file changes, **Sync Details** on the right of the second line expands
+  to list every file that was **created, updated or deleted**, with file sizes.
+- When a folder is deleted, its subfolders and files are listed too; system junk such as
+  `.DS_Store` is hidden.
+- Details are not truncated. The last 300 runs are kept; lists taller than 180 pt scroll
+  inside the box.
+
 ---
 
 ## What it does to your computer
@@ -168,7 +181,7 @@ while a sync is running.
   ```
   ~/Library/Application Support/FolderSync/
   ├── config.json     task configuration
-  └── history.json    sync history (last 300 runs)
+  └── history.json    sync history (last 300 runs, with per-file details)
   ```
 
 - With **Launch at login** enabled, a login item is written to:
@@ -188,8 +201,12 @@ while a sync is running.
   the workaround described under Installation.
 - When the menu bar is crowded, macOS hides new icons under `«`; hold `⌘` and drag to
   reorder them.
-- Sync failures are listed under **Recent Records**; more detailed runtime errors can be
-  found in Console.app by searching for `FolderSync`.
+- **Preview Changes** lists at most the first 300 items; the actual sync is not limited
+  by this display cap.
+- Every change is saved per run. A first full sync of a very large folder can make
+  `history.json` noticeably larger.
+- Sync failures are listed in **Sync History**; more detailed runtime errors can be found
+  in Console.app by searching for `FolderSync`.
 
 ---
 
