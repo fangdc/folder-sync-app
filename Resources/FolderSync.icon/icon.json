@@ -1,0 +1,240 @@
+{
+  "features" : [
+    "refractivity"
+  ],
+  "fill-specializations" : [
+    {
+      "value" : "system-light"
+    },
+    {
+      "appearance" : "dark",
+      "value" : "system-dark"
+    }
+  ],
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00000,0.00000,0.00000,0.80000",
+                  "srgb:0.00000,0.00000,0.00000,0.20000"
+                ]
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:1.00000,1.00000,1.00000,0.80000",
+                  "srgb:1.00000,1.00000,1.00000,0.20000"
+                ]
+              }
+            }
+          ],
+          "image-name" : "路径 3.svg",
+          "name" : "路径 3",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              155.29818443061458,
+              27.04061994070082
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "srgb:0.00000,0.00000,0.00000,0.80000",
+              "srgb:0.00000,0.00000,0.00000,0.20000"
+            ]
+          },
+          "hidden" : true,
+          "image-name" : "路径备份.svg",
+          "name" : "路径备份",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              155.29818351972767,
+              27.03969281889215
+            ]
+          }
+        }
+      ],
+      "position" : {
+        "scale" : 0.9,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "refractivity" : {
+        "depth" : 0,
+        "enabled" : true,
+        "strength" : -0.24
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 1
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:0.00000,0.00000,0.00000,0.20000",
+                  "srgb:0.00000,0.00000,0.00000,0.80000"
+                ]
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "linear-gradient" : [
+                  "srgb:1.00000,1.00000,1.00000,0.20000",
+                  "srgb:1.00000,1.00000,1.00000,0.80000"
+                ]
+              }
+            }
+          ],
+          "image-name" : "路径 2.svg",
+          "name" : "路径 2",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -155.00178443061463,
+              -26.638889940700324
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "srgb:0.00000,0.00000,0.00000,0.20000",
+              "srgb:0.00000,0.00000,0.00000,0.80000"
+            ]
+          },
+          "hidden" : true,
+          "image-name" : "路径.svg",
+          "name" : "路径",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -155.00178351972772,
+              -26.638092818892005
+            ]
+          }
+        }
+      ],
+      "name" : "Group",
+      "position" : {
+        "scale" : 0.9,
+        "translation-in-points" : [
+          0,
+          0
+        ]
+      },
+      "refractivity" : {
+        "depth" : 0,
+        "enabled" : true,
+        "strength" : -0.24
+      },
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 1
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:0.00000,0.99144,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.01680,0.19835,1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "矩形.svg",
+          "name" : "矩形",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              172,
+              172
+            ]
+          }
+        }
+      ],
+      "name" : "Group",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.6
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "srgb:0.01680,0.19835,1.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "srgb:0.00000,0.99144,1.00000,1.00000"
+              }
+            }
+          ],
+          "image-name" : "矩形.svg",
+          "name" : "矩形",
+          "position" : {
+            "scale" : 1,
+            "translation-in-points" : [
+              -172,
+              -172
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.6
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
