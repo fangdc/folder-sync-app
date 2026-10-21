@@ -592,11 +592,13 @@ struct HistorySheet: View {
     @Environment(\.dismiss) private var dismiss
     /// 是否正在显示「确认清空」的原生弹窗
     @State private var isConfirmingClear = false
+    /// 哪几次运行的「同步详情」是展开的。默认展开最新一次（改动不多时）。
+    @State private var expandedChangeRuns: Set<UUID> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                // 标题只写「同步记录」—— 哪个任务已经写在每条记录里了，不必在标题重复
+                // 标题只写「同步记录」—— 记录是从任务详情页打开的，不必在标题重复任务名
                 Text("同步记录")
                     .font(.headline)
                 Spacer()
@@ -617,26 +619,66 @@ struct HistorySheet: View {
                     VStack(alignment: .leading, spacing: 5) {
                         HStack(spacing: 8) {
                             Circle().fill(color(for: run.outcome)).frame(width: 8, height: 8)
-                            Text(run.taskName).font(.system(size: 13, weight: .medium))
-                            Spacer()
+                            // 任务名不再重复显示：记录是从某个任务的详情页打开的，上下文已经明确。
+                            // 第一行直接放这次运行的结果，失败 / 无变动 / 新增 N 一眼就能看到。
+                            Text(run.brief)
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(run.outcome == .success ? Color.primary : color(for: run.outcome))
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
                             Text(Fmt.absolute(run.startedAt))
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.secondary)
                         }
-                        Text(run.brief)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
                         HStack(spacing: 12) {
-                            Text("耗时 \(Fmt.duration(run.duration))")
-                            Text("数据量 \(Fmt.bytes(run.bytesCopied))")
-                            Text(triggerLabel(run.trigger))
+                            HStack(spacing: 12) {
+                                Text("耗时 \(Fmt.duration(run.duration))")
+                                Text("数据量 \(Fmt.bytes(run.bytesCopied))")
+                                Text(triggerLabel(run.trigger))
+                            }
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            Spacer(minLength: 8)
+                            if run.hasChangeDetails {
+                                syncDetailsToggle(for: run)
+                            }
                         }
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
+                        if run.hasChangeDetails, expandedChangeRuns.contains(run.id) {
+                            // 超过 80 条改用 LazyVStack；一次同步几万条时也只创建可见的行。
+                            // 条数少时框高按内容自适应，超过 180pt 后框内滚动。
+                            if run.changes.count > syncDetailLazyThreshold {
+                                ScrollViewReader { proxy in
+                                    ScrollView(.vertical) {
+                                        ChangeLogView(run: run, lazy: true)
+                                            .padding(10)
+                                            .id("syncDetailTop")
+                                    }
+                                    .defaultScrollAnchor(.top)
+                                    .scrollIndicators(.visible)
+                                    .onAppear {
+                                        // 几万条时 LazyVStack 内容高度很大，首次布局可能落在中间；
+                                        // 强制回到第一行，避免一展开就是 file-00160。
+                                        DispatchQueue.main.async {
+                                            proxy.scrollTo("syncDetailTop", anchor: .top)
+                                        }
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .frame(height: 180)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color(nsColor: .underPageBackgroundColor))
+                                )
+                            } else {
+                                SyncDetailBox(maxHeight: 180) {
+                                    ChangeLogView(run: run)
+                                }
+                            }
+                        }
                         if !run.messages.isEmpty {
                             VStack(alignment: .leading, spacing: 2) {
                                 ForEach(Array(run.messages.prefix(5).enumerated()), id: \.offset) { _, message in
-                                    Text("· \(message)")
+                                    Text(message)
                                         .font(.system(size: 10, design: .monospaced))
                                         .foregroundStyle(.orange)
                                         .textSelection(.enabled)
@@ -655,6 +697,22 @@ struct HistorySheet: View {
             }
             // 给悬浮按钮让出滚动空间：不这么做，列表最后一条会被按钮永久压住
             .contentMargins(.bottom, 52, for: .scrollContent)
+            .onAppear {
+                // 打开记录时默认展开最新一次运行的明细：多数同步只改几个文件，
+                // 直接就能看到改了什么。首次全量同步这种改动特别多的保持收起，
+                // 避免一打开就是几百行。
+                //
+                // 必须等这一轮渲染结束（async）再改状态：在 onAppear 里同步插入时，
+                // 行视图会保留插入前的 isExpanded=false，而 Set 里已经有这个 id，
+                // 再点「同步详情」只是重复插入同一个 id、不产生状态变化，界面永远不展开（实测）。
+                guard let latest = runs.first,
+                      latest.hasChangeDetails,
+                      latest.changeCount <= 30 else { return }
+                let id = latest.id
+                DispatchQueue.main.async {
+                    expandedChangeRuns.insert(id)
+                }
+            }
             // 「清空」悬浮在列表上方、底部居中（不是在列表下面另占一行）。
             // 样式复用详情页「预览改动」那套玻璃胶囊 + icon + 文字。
             .overlay(alignment: .bottom) {
@@ -698,6 +756,32 @@ struct HistorySheet: View {
         }
     }
 
+    // MARK: 同步详情
+
+    /// 记录第二行右侧的「同步详情」开关：点开在下方展示这次同步新建 / 修改 / 删除了哪些文件。
+    @ViewBuilder
+    private func syncDetailsToggle(for run: SyncRun) -> some View {
+        let isExpanded = expandedChangeRuns.contains(run.id)
+        Button {
+            if isExpanded {
+                expandedChangeRuns.remove(run.id)
+            } else {
+                expandedChangeRuns.insert(run.id)
+            }
+        } label: {
+            HStack(spacing: 3) {
+                Text("同步详情")
+                Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "收起同步详情" : "展开这次同步新建、修改、删除了哪些文件")
+    }
+
     private func color(for outcome: SyncOutcome) -> Color {
         switch outcome {
         case .success: return .green
@@ -705,6 +789,173 @@ struct HistorySheet: View {
         case .failed: return .red
         case .cancelled: return .gray
         }
+    }
+}
+
+// MARK: - 同步详情内容
+
+/// 一次运行的明细超过这么多条时，用 LazyVStack 渲染，避免一次性创建几万个行视图。
+private let syncDetailLazyThreshold = 80
+
+/// 详情内容的高度测量：把内容自然高度上报给 `SyncDetailBox`。
+private struct SyncDetailHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// 同步详情的灰色圆角框。
+/// 内容不高时贴合内容；超过 `maxHeight` 后高度封顶，超出部分在框内滚动。
+private struct SyncDetailBox<Content: View>: View {
+    let maxHeight: CGFloat
+    @ViewBuilder var content: Content
+    @State private var contentHeight: CGFloat = 0
+
+    var body: some View {
+        ScrollView(.vertical) {
+            content
+                .padding(10)
+                .background(
+                    GeometryReader { proxy in
+                        Color.clear.preference(key: SyncDetailHeightKey.self, value: proxy.size.height)
+                    }
+                )
+        }
+        // 内容没超出时不显示滚动条，避免短列表旁边多一条无意义的滚动条
+        .scrollIndicators(contentHeight > maxHeight ? .visible : .hidden)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 初值给 1pt：内容还没量出高度时框高为 0，会让 GeometryReader 没有可布局空间
+        .frame(height: min(max(contentHeight, 1), maxHeight))
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .underPageBackgroundColor))
+        )
+        .onPreferenceChange(SyncDetailHeightKey.self) { height in
+            contentHeight = height
+        }
+    }
+}
+
+/// 一次同步的逐条变更清单，按「新建 / 修改 / 删除」分组。
+/// 路径是相对同步文件夹的路径，鼠标悬停可看完整路径，也可以直接选中复制。
+private struct ChangeLogView: View {
+    let run: SyncRun
+    /// 大列表走 LazyVStack，只创建可见的行。
+    var lazy: Bool = false
+
+    private enum Row: Identifiable {
+        case divider(SyncChangeGroup)
+        case header(SyncChangeGroup, count: Int)
+        case change(SyncChange, group: SyncChangeGroup)
+        case note(String)
+
+        var id: String {
+            switch self {
+            case .divider(let group): return "divider-\(group.rawValue)"
+            case .header(let group, _): return "header-\(group.rawValue)"
+            case .change(let change, _): return "change-\(change.id)"
+            case .note(let text): return "note-\(text)"
+            }
+        }
+    }
+
+    private var rows: [Row] {
+        var result: [Row] = []
+        let groups = SyncChangeGroup.allCases.filter { !run.changes(in: $0).isEmpty }
+        for (index, group) in groups.enumerated() {
+            if index > 0 {
+                result.append(.divider(group))
+            }
+            let items = run.changes(in: group)
+            result.append(.header(group, count: items.count))
+            for item in items {
+                result.append(.change(item, group: group))
+            }
+        }
+        if run.changesOmitted > 0 {
+            result.append(.note("这条记录由旧版本生成，另有 \(run.changesOmitted) 项变更没有保存。"))
+        }
+        return result
+    }
+
+    var body: some View {
+        if lazy {
+            LazyVStack(alignment: .leading, spacing: 2) {
+                ForEach(rows) { row in
+                    rowView(row)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(rows) { row in
+                    rowView(row)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rowView(_ row: Row) -> some View {
+        switch row {
+        case .divider:
+            // 0.5pt ≈ Retina 屏 1 物理像素；10% 黑，比系统 Divider 更轻
+            Rectangle()
+                .fill(Color.black.opacity(0.10))
+                .frame(height: 0.5)
+                .padding(.vertical, 5)
+        case .header(let group, let count):
+            HStack(spacing: 5) {
+                Text(group.title)
+                    .font(.system(size: 10, weight: .semibold))
+                    // 浅色下是 60% 黑，深色下自动变成 60% 白，避免在黑底上看不见
+                    .foregroundStyle(Color.primary.opacity(0.60))
+                Text("\(count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+        case .change(let change, let group):
+            HStack(spacing: 6) {
+                Image(systemName: icon(for: change.kind))
+                    .font(.system(size: 9))
+                    .foregroundStyle(color(for: group).opacity(0.85))
+                    .frame(width: 12)
+                Text(change.path)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                    .help(change.path)
+                Spacer(minLength: 8)
+                if change.size > 0 {
+                    Text(Fmt.bytes(change.size))
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .monospacedDigit()
+                }
+            }
+        case .note(let text):
+            Text(text)
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 5)
+        }
+    }
+
+    private func color(for group: SyncChangeGroup) -> Color {
+        switch group {
+        case .created: return .green
+        case .updated: return .blue
+        case .deleted: return .red
+        }
+    }
+
+    private func icon(for kind: SyncChangeKind) -> String {
+        if kind.isFolder { return "folder" }
+        if kind.isLink { return "link" }
+        return "doc"
     }
 }
 

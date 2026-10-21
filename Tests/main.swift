@@ -752,6 +752,108 @@ test("运行记录：摘要文案") {
     checkEqual(run.changedCount, 6, "改动计数")
 }
 
+test("运行记录：逐条记录新建、修改、删除的文件") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "docs/guide.md", "guide")
+    makeFile(source, "readme.md", "hello")
+
+    // 第一次：新建文件夹 + 两个文件
+    let first = runSync(source: source, destination: destination)
+    checkEqual(first.changes(in: .created).count, 3, "应记录 1 个新建文件夹和 2 个新建文件")
+    checkEqual(first.changes(in: .updated).count, 0, "没有修改")
+    checkEqual(first.changes(in: .deleted).count, 0, "没有删除")
+    checkEqual(first.changes(in: .created).map(\.path).sorted(),
+               ["docs", "docs/guide.md", "readme.md"],
+               "应逐条记下路径")
+    check(first.changes.contains { $0.kind == .createdFolder && $0.path == "docs" }, "文件夹应标为新建文件夹")
+    check(first.changes.contains { $0.kind == .createdFile && $0.path == "docs/guide.md" }, "文件应标为新建文件")
+
+    // 第二次：只改了一个文件
+    makeFile(source, "readme.md", "hello, changed")
+    let second = runSync(source: source, destination: destination)
+    checkEqual(second.updated, 1, "应重新复制 1 个文件")
+    checkEqual(second.changes(in: .updated).map(\.path), ["readme.md"], "修改的文件应被记下来")
+    checkEqual(second.changes(in: .created).count, 0, "这次没有新建")
+
+    // 第三次：镜像模式下删掉目标里多出来的文件
+    try? fm.removeItem(at: source.appendingPathComponent("readme.md"))
+    let third = runSync(source: source, destination: destination, options: mirrorOptions())
+    checkEqual(third.deleted, 1, "应删除 1 个文件")
+    checkEqual(third.changes(in: .deleted).map(\.path), ["readme.md"], "删除的文件应被记下来")
+    check(third.changesOmitted == 0, "变更很少时不应截断")
+}
+
+test("同步详情：删除文件夹时列出里面的内容") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "keep.txt", "keep")
+    makeFile(destination, "extra/a.txt", "a")
+    makeFile(destination, "extra/sub/b.txt", "b")
+    makeFile(destination, "extra/.DS_Store", "junk")
+
+    let run = runSync(source: source, destination: destination, options: mirrorOptions())
+    check(!exists(destination.appendingPathComponent("extra")), "整个目录应被删除")
+    checkEqual(run.deleted, 4, "目录 + 2 个文件 + 1 个子目录（.DS_Store 不计），实际 \(run.deleted)")
+    checkEqual(run.changes(in: .deleted).map(\.path),
+               ["extra", "extra/a.txt", "extra/sub", "extra/sub/b.txt"],
+               "应列出目录及里面的内容")
+    check(!run.changes(in: .deleted).contains { $0.path.contains(".DS_Store") }, "系统文件不应进日志")
+}
+
+test("运行记录：变更明细不再截断，并兼容旧记录") {
+    // 现在不设上限：250 条全部保留
+    var run = SyncRun(taskID: UUID(), taskName: "t", trigger: "manual")
+    for index in 0..<250 {
+        run.recordChange(.createdFile, path: "f\(index).txt", size: Int64(index))
+    }
+    checkEqual(run.changes.count, 250, "明细应全部保留")
+    checkEqual(run.changesOmitted, 0, "新记录不应再有截断计数")
+    checkEqual(run.changeCount, 250, "变更总数应完整")
+
+    // 旧版 history.json 没有 changeLog 字段：不能因为解码失败把整份历史丢掉
+    let legacy = """
+    [{"id":"\(UUID().uuidString)","taskID":"\(UUID().uuidString)","taskName":"旧记录",
+      "startedAt":"2026-01-01T00:00:00Z","trigger":"manual","outcome":"success",
+      "copied":1,"updated":0,"skipped":0,"deleted":0,"failed":0,"bytesCopied":10,
+      "destinationPath":"/tmp/旧记录","messages":[]}]
+    """.data(using: .utf8)!
+    let decoder = JSONDecoder()
+    decoder.dateDecodingStrategy = .iso8601
+    let decoded = try? decoder.decode([SyncRun].self, from: legacy)
+    check(decoded?.count == 1, "旧记录应能解码")
+    checkEqual(decoded?.first?.changes.count, 0, "旧记录没有明细")
+    checkEqual(decoded?.first?.brief, "新增 1", "旧记录的摘要照常显示")
+
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+
+    // 带明细的记录能完整往返（包括第 250 条）
+    if let data = try? encoder.encode([run]),
+       let roundTrip = try? decoder.decode([SyncRun].self, from: data) {
+        checkEqual(roundTrip.first?.changes.count, 250, "全部明细应能写盘并读回")
+        checkEqual(roundTrip.first?.changesOmitted, 0, "新记录不应有截断")
+        checkEqual(roundTrip.first?.changes.first?.path, "f0.txt", "首条路径应保持不变")
+        checkEqual(roundTrip.first?.changes.last?.path, "f249.txt", "最后一条也应保留")
+    } else {
+        check(false, "带明细的记录应能编码解码")
+    }
+
+    // 旧版本截断过的记录仍要能读：omitted 保留，总数 = 已保存 + 未保存
+    var oldLog = SyncChangeLog()
+    oldLog.changes = [SyncChange(kind: .createdFile, path: "a.txt", size: 1)]
+    oldLog.omitted = 50
+    var oldRun = SyncRun(taskID: UUID(), taskName: "old", trigger: "manual")
+    oldRun.changeLog = oldLog
+    if let data = try? encoder.encode([oldRun]),
+       let decodedOld = try? decoder.decode([SyncRun].self, from: data) {
+        checkEqual(decodedOld.first?.changesOmitted, 50, "旧记录的截断计数应保留")
+        checkEqual(decodedOld.first?.changeCount, 51, "旧记录总数 = 已保存 + 未保存")
+    } else {
+        check(false, "旧截断记录应能解码")
+    }
+}
+
 test("配置：JSON 往返与缺字段兼容") {
     var task = SyncTask()
     task.sourcePath = "/Users/me/照片"

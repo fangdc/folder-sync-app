@@ -235,6 +235,85 @@ enum SyncOutcome: String, Codable, Sendable {
     }
 }
 
+// MARK: - 变更明细
+
+/// 一次同步里，单个条目的变更类型。
+///
+/// 分类刻意按用户能看懂的动作来，而不是文件系统操作：
+/// 「新建文件夹 / 新建文件 / 新建链接 / 修改 / 删除文件夹 / 删除文件」。
+enum SyncChangeKind: String, Codable, Sendable {
+    case createdFolder
+    case createdFile
+    case createdLink
+    case modifiedFile
+    case deletedFolder
+    case deletedFile
+
+    /// 界面上归到哪一组（新建 / 修改 / 删除）。
+    var group: SyncChangeGroup {
+        switch self {
+        case .createdFolder, .createdFile, .createdLink: return .created
+        case .modifiedFile: return .updated
+        case .deletedFolder, .deletedFile: return .deleted
+        }
+    }
+
+    var isFolder: Bool {
+        self == .createdFolder || self == .deletedFolder
+    }
+
+    var isLink: Bool {
+        self == .createdLink
+    }
+}
+
+enum SyncChangeGroup: String, CaseIterable, Sendable {
+    case created
+    case updated
+    case deleted
+
+    var title: String {
+        switch self {
+        case .created: return "新建"
+        case .updated: return "修改"
+        case .deleted: return "删除"
+        }
+    }
+}
+
+/// 一条「哪个文件被怎么处理了」的记录。
+struct SyncChange: Codable, Sendable, Hashable, Identifiable {
+    var kind: SyncChangeKind
+    var path: String
+    /// 文件大小。文件夹和符号链接为 0。
+    var size: Int64 = 0
+
+    /// 同一次运行里同一个路径只会出现一次，所以不必额外存 UUID
+    /// （每条记录都要写进 history.json，能省则省）。
+    var id: String { "\(kind.rawValue)|\(path)" }
+}
+
+/// 一次运行的逐条变更日志。
+///
+/// 放在可选字段里而不是直接给 `SyncRun` 加非可选数组：老版本写下的
+/// history.json 没有这个键，非可选会让整份历史解码失败、记录全部消失。
+struct SyncChangeLog: Codable, Sendable {
+    var changes: [SyncChange] = []
+    /// 旧版本截断时没保存下来的条数。
+    ///
+    /// 现在不再限制条数，新记录里恒为 0；保留这个字段只为了正确读取
+    /// 旧版本写下的历史（否则整份 history.json 会解码失败）。
+    var omitted: Int = 0
+
+    mutating func record(_ change: SyncChange) {
+        changes.append(change)
+    }
+
+    func changes(in group: SyncChangeGroup) -> [SyncChange] {
+        changes.filter { $0.kind.group == group }
+    }
+}
+
 struct SyncRun: Identifiable, Codable, Sendable {
     var id: UUID = UUID()
     var taskID: UUID
@@ -252,6 +331,9 @@ struct SyncRun: Identifiable, Codable, Sendable {
     var bytesCopied: Int64 = 0
     var destinationPath: String = ""
     var messages: [String] = []
+    /// 逐个文件的变更明细（新建 / 修改 / 删除）。
+    /// 可选是为了兼容没有这个字段的旧记录，见 `SyncChangeLog`。
+    var changeLog: SyncChangeLog?
 
     /// 这次运行是否因为「没有访问权限」失败。
     /// 用可选而不是 Bool = false：history.json 里的老记录没有这个键，
@@ -264,6 +346,30 @@ struct SyncRun: Identifiable, Codable, Sendable {
     }
 
     var changedCount: Int { copied + updated + deleted }
+
+    // MARK: 变更明细
+
+    /// 已经逐条记录下来的变更。
+    var changes: [SyncChange] { changeLog?.changes ?? [] }
+
+    /// 旧版本截断时没保存下来的变更条数；新记录恒为 0。
+    var changesOmitted: Int { changeLog?.omitted ?? 0 }
+
+    /// 本次运行实际发生的变更总数（旧记录含没保存下来的部分）。
+    var changeCount: Int { changes.count + changesOmitted }
+
+    var hasChangeDetails: Bool { changeCount > 0 }
+
+    func changes(in group: SyncChangeGroup) -> [SyncChange] {
+        changeLog?.changes(in: group) ?? []
+    }
+
+    /// 记录一条成功的变更。失败的操作仍然只进 `messages`，不混进变更明细。
+    mutating func recordChange(_ kind: SyncChangeKind, path: String, size: Int64 = 0) {
+        var log = changeLog ?? SyncChangeLog()
+        log.record(SyncChange(kind: kind, path: path, size: size))
+        changeLog = log
+    }
 
     var brief: String {
         guard outcome != .failed, outcome != .cancelled else {

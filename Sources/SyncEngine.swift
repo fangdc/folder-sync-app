@@ -534,13 +534,23 @@ enum SyncEngine {
                 switch item.kind {
                 case .directory:
                     try ensureDirectory(destinationURL, fm: fm)
+                    // 目录也记一条：首次同步时能看出到底建了哪些文件夹
+                    run.recordChange(.createdFolder, path: item.relativePath)
                     consecutiveFailures = 0
                 case .file, .symlink:
                     let existed = try copyItem(source: sourceURL,
                                                destination: destinationURL,
                                                fm: fm,
                                                temporaryPrefix: SyncOptions.temporaryPrefix)
-                    if existed { run.updated += 1 } else { run.copied += 1 }
+                    if existed {
+                        run.updated += 1
+                        run.recordChange(.modifiedFile, path: item.relativePath, size: item.size)
+                    } else {
+                        run.copied += 1
+                        run.recordChange(item.kind == .symlink ? .createdLink : .createdFile,
+                                         path: item.relativePath,
+                                         size: item.size)
+                    }
                     run.bytesCopied += item.size
                     state.bytesCopied += item.size
                     consecutiveFailures = 0
@@ -566,9 +576,27 @@ enum SyncEngine {
                 if cancellation?.isCancelled == true { cancelled = true; break }
                 let destinationURL = destination.appendingPathComponent(item.relativePath)
                 state.currentPath = item.relativePath
+                let isFolder = item.kind == .directory
+                // 删除仍按整个文件夹一次完成；这里先把里面的内容枚举出来，
+                // 只用于「同步详情」逐条展示，否则日志里只能看到一个文件夹名。
+                let contents = isFolder
+                    ? contentsForDeletionLog(of: destinationURL,
+                                             relativePath: item.relativePath,
+                                             options: request.options,
+                                             fm: fm)
+                    : []
                 do {
                     try deleteItem(destinationURL, fm: fm, trash: request.options.trashDeletions)
                     run.deleted += 1
+                    run.recordChange(isFolder ? .deletedFolder : .deletedFile,
+                                     path: item.relativePath,
+                                     size: item.size)
+                    for child in contents {
+                        run.deleted += 1
+                        run.recordChange(child.kind == .directory ? .deletedFolder : .deletedFile,
+                                         path: child.relativePath,
+                                         size: child.size)
+                    }
                     consecutiveFailures = 0
                 } catch {
                     run.failed += 1
@@ -676,6 +704,38 @@ enum SyncEngine {
             }
         }
         try fm.removeItem(at: url)
+    }
+
+    /// 列出即将删除的文件夹里的内容（相对同步根目录），只用于同步详情的逐条记录。
+    ///
+    /// 删除本身仍然一次删掉整个文件夹（进废纸篓 / removeItem），这里只是额外枚举一遍；
+    /// 系统垃圾文件会跟着文件夹一起被删掉，但不写进日志，避免满屏 `.DS_Store`。
+    private static func contentsForDeletionLog(of folder: URL,
+                                               relativePath: String,
+                                               options: SyncOptions,
+                                               fm: FileManager) -> [SyncPlanItem] {
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        let keySet = Set(keys)
+        guard let enumerator = fm.enumerator(at: folder,
+                                             includingPropertiesForKeys: keys,
+                                             options: [.producesRelativePathURLs]) else {
+            return []
+        }
+        var items: [SyncPlanItem] = []
+        while let url = enumerator.nextObject() as? URL {
+            let name = url.lastPathComponent
+            if name.hasPrefix(SyncOptions.temporaryPrefix) { continue }
+            if options.ignoreSystemFiles, SyncOptions.systemFileNames.contains(name) { continue }
+            let inner = SyncPlanner.relativePath(for: url, base: folder.path)
+            guard !inner.isEmpty else { continue }
+            let values = try? url.resourceValues(forKeys: keySet)
+            let isDirectory = values?.isDirectory ?? false
+            let isSymlink = values?.isSymbolicLink ?? false
+            items.append(SyncPlanItem(relativePath: relativePath + "/" + inner,
+                                      kind: isDirectory && !isSymlink ? .directory : .file,
+                                      size: Int64(values?.fileSize ?? 0)))
+        }
+        return items.sorted { $0.relativePath < $1.relativePath }
     }
 
     /// 清理上次异常中断留下的临时文件。
