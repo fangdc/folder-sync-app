@@ -148,8 +148,20 @@ fi
 # 只删隔离属性；不要用 -c 形式（会清全部属性，包括系统保护的
 # com.apple.provenance，反而报 Operation not permitted）
 xattr -dr com.apple.quarantine "$APP_DIR" 2>/dev/null || true
-codesign --force --sign - --timestamp=none "$APP_DIR" >/dev/null 2>&1 \
-    || echo "   （临时签名失败，不影响本机运行）"
+# 签名必须成功：没有 bundle 签名的 App 在 macOS 眼里身份不稳定，
+# TCC（隐私授权）记不住授权 —— 表现为「每次定时同步都弹『想访问硬盘上的文件』」。
+if ! codesign --force --sign - --timestamp=none "$APP_DIR" >/dev/null 2>&1; then
+    echo "   ✗ 签名失败（codesign 返回非 0）—— 这样的包在系统里授权不会持久，请勿分发"
+    exit 1
+fi
+# 复核：Identifier 必须是 Info.plist 里的 bundle id，而不是二进制切片名（如 FolderSync-arm64）
+SIGN_ID="$(codesign -dvv "$APP_DIR" 2>&1 | awk -F= '/^Identifier=/{print $2}')"
+BUNDLE_ID="$(plutil -extract CFBundleIdentifier raw "$APP_DIR/Contents/Info.plist" 2>/dev/null)"
+if [ "$SIGN_ID" != "$BUNDLE_ID" ]; then
+    echo "   ✗ 签名标识不对：$SIGN_ID（应为 $BUNDLE_ID）—— bundle 没有被重签，授权不会持久"
+    exit 1
+fi
+echo "   签名：$SIGN_ID"
 
 echo "==> 完成：$APP_DIR"
 echo "   架构：$(lipo -archs "$APP_DIR/Contents/MacOS/$APP_NAME")"
