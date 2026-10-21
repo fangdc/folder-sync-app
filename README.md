@@ -1,3 +1,5 @@
+[简体中文](README.md) · [English](README.en.md)
+
 # FolderSync
 
 把 Mac 上的一个文件夹**单向同步**到移动硬盘或另一个目录。
