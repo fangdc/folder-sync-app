@@ -164,6 +164,8 @@ data volume. Click **View All Records** to open the full history.
   to list every file that was **created, updated or deleted**, with file sizes.
 - When a folder is deleted, its subfolders and files are listed too; system junk such as
   `.DS_Store` is hidden.
+- Renaming a folder is reported as a folder **modification**, not as new files; an empty
+  folder rename also shows "Modified 1".
 - Details are not truncated. The last 300 runs are kept; lists taller than 180 pt scroll
   inside the box.
 
