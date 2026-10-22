@@ -692,6 +692,8 @@ struct HistorySheet: View {
                         }
                     }
                         .padding(.vertical, 4)
+                        // 记录之间的系统分隔线：0.5pt（Retina 1 物理像素），4% 黑
+                        .listRowSeparatorTint(Color.black.opacity(0.04))
                     }
                 }
             }
@@ -899,9 +901,9 @@ private struct ChangeLogView: View {
     private func rowView(_ row: Row) -> some View {
         switch row {
         case .divider:
-            // 0.5pt ≈ Retina 屏 1 物理像素；10% 黑，比系统 Divider 更轻
+            // 0.5pt ≈ Retina 屏 1 物理像素；4% 黑，比系统 Divider 更轻
             Rectangle()
-                .fill(Color.black.opacity(0.10))
+                .fill(Color.black.opacity(0.04))
                 .frame(height: 0.5)
                 .padding(.vertical, 5)
         case .header(let group, let count):
