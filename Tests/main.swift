@@ -801,6 +801,99 @@ test("同步详情：删除文件夹时列出里面的内容") {
     check(!run.changes(in: .deleted).contains { $0.path.contains(".DS_Store") }, "系统文件不应进日志")
 }
 
+test("文件夹改名：算修改，不把里面的文件算新增") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "旧名字/文件.txt", "content")
+    runSync(source: source, destination: destination)
+
+    try? fm.moveItem(at: source.appendingPathComponent("旧名字"),
+                     to: source.appendingPathComponent("新名字"))
+
+    let run = runSync(source: source, destination: destination)
+    checkEqual(run.updated, 1, "改名应只算 1 次修改")
+    checkEqual(run.copied, 0, "里面的文件不应算新增")
+    checkEqual(run.deleted, 0, "改名不应算删除")
+    checkEqual(run.failed, 0, "不应有失败")
+    checkEqual(run.brief, "修改 1", "状态应显示修改 1")
+    checkEqual(run.changes(in: .created).count, 0, "不应产生新建记录")
+
+    let change = run.changes(in: .updated).first
+    check(change?.kind == .modifiedFolder, "应记成修改文件夹")
+    checkEqual(change?.path, "新名字", "新路径")
+    checkEqual(change?.fromPath, "旧名字", "旧路径")
+    check(exists(destination.appendingPathComponent("新名字/文件.txt")), "新文件夹里应有文件")
+    check(!exists(destination.appendingPathComponent("旧名字")), "旧文件夹应消失")
+}
+
+test("空文件夹改名：不能再显示无变动") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeDir(source, "空旧")
+    runSync(source: source, destination: destination)
+
+    try? fm.moveItem(at: source.appendingPathComponent("空旧"),
+                     to: source.appendingPathComponent("空新"))
+
+    let run = runSync(source: source, destination: destination)
+    checkEqual(run.updated, 1, "空文件夹改名也算一次修改")
+    checkEqual(run.copied, 0, "没有文件要复制")
+    checkEqual(run.brief, "修改 1", "状态应显示修改 1")
+    checkEqual(run.changes(in: .updated).first?.kind, .modifiedFolder, "应记成修改文件夹")
+    check(exists(destination.appendingPathComponent("空新")), "新文件夹应存在")
+    check(!exists(destination.appendingPathComponent("空旧")), "旧文件夹应消失")
+}
+
+test("镜像模式文件夹改名：不算删除 + 新增") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "旧名字/文件.txt", "content")
+    runSync(source: source, destination: destination, options: mirrorOptions())
+
+    try? fm.moveItem(at: source.appendingPathComponent("旧名字"),
+                     to: source.appendingPathComponent("新名字"))
+
+    let run = runSync(source: source, destination: destination, options: mirrorOptions())
+    checkEqual(run.updated, 1, "改名应只算 1 次修改")
+    checkEqual(run.copied, 0, "不应重新复制文件")
+    checkEqual(run.deleted, 0, "改名不应算删除")
+    checkEqual(run.brief, "修改 1", "状态应显示修改 1")
+    checkEqual(run.changes(in: .deleted).count, 0, "不应产生删除记录")
+    check(exists(destination.appendingPathComponent("新名字/文件.txt")), "新文件夹里应有文件")
+    check(!exists(destination.appendingPathComponent("旧名字")), "旧文件夹应消失")
+}
+
+test("文件夹改名并修改文件：文件算修改，不算新增") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "旧名字/文件.txt", "old")
+    runSync(source: source, destination: destination)
+
+    try? fm.moveItem(at: source.appendingPathComponent("旧名字"),
+                     to: source.appendingPathComponent("新名字"))
+    makeFile(source, "新名字/文件.txt", "changed")
+
+    let run = runSync(source: source, destination: destination)
+    checkEqual(run.updated, 2, "文件夹改名 + 文件修改")
+    checkEqual(run.copied, 0, "文件应算修改而不是新增")
+    checkEqual(run.brief, "修改 2", "状态应显示修改 2")
+    checkEqual(contents(destination.appendingPathComponent("新名字/文件.txt")), "changed", "新内容应同步")
+}
+
+test("文件夹改名检测：内容不同不误判") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    makeFile(source, "keep.txt", "keep")
+    makeFile(source, "新文件夹/新.txt", "new")
+    makeFile(destination, "旧文件夹/旧.txt", "old")
+
+    let run = runSync(source: source, destination: destination)
+    checkEqual(run.updated, 0, "内容不同不应算改名")
+    checkEqual(run.copied, 2, "keep.txt 和新文件夹里的文件都应复制")
+    check(exists(destination.appendingPathComponent("旧文件夹/旧.txt")), "增量模式下旧文件夹应保留")
+    check(!run.changes.contains { $0.kind == .modifiedFolder }, "不应产生修改文件夹记录")
+}
+
 test("运行记录：变更明细不再截断，并兼容旧记录") {
     // 现在不设上限：250 条全部保留
     var run = SyncRun(taskID: UUID(), taskName: "t", trigger: "manual")

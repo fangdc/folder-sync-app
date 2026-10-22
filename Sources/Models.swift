@@ -246,6 +246,8 @@ enum SyncChangeKind: String, Codable, Sendable {
     case createdFile
     case createdLink
     case modifiedFile
+    /// 文件夹改名 / 移动（旧路径 → 新路径）
+    case modifiedFolder
     case deletedFolder
     case deletedFile
 
@@ -253,13 +255,13 @@ enum SyncChangeKind: String, Codable, Sendable {
     var group: SyncChangeGroup {
         switch self {
         case .createdFolder, .createdFile, .createdLink: return .created
-        case .modifiedFile: return .updated
+        case .modifiedFile, .modifiedFolder: return .updated
         case .deletedFolder, .deletedFile: return .deleted
         }
     }
 
     var isFolder: Bool {
-        self == .createdFolder || self == .deletedFolder
+        self == .createdFolder || self == .modifiedFolder || self == .deletedFolder
     }
 
     var isLink: Bool {
@@ -285,6 +287,8 @@ enum SyncChangeGroup: String, CaseIterable, Sendable {
 struct SyncChange: Codable, Sendable, Hashable, Identifiable {
     var kind: SyncChangeKind
     var path: String
+    /// 文件夹改名时的旧路径。用可选是为了兼容没有这个字段的旧记录。
+    var fromPath: String?
     /// 文件大小。文件夹和符号链接为 0。
     var size: Int64 = 0
 
@@ -365,9 +369,12 @@ struct SyncRun: Identifiable, Codable, Sendable {
     }
 
     /// 记录一条成功的变更。失败的操作仍然只进 `messages`，不混进变更明细。
-    mutating func recordChange(_ kind: SyncChangeKind, path: String, size: Int64 = 0) {
+    mutating func recordChange(_ kind: SyncChangeKind,
+                               path: String,
+                               fromPath: String? = nil,
+                               size: Int64 = 0) {
         var log = changeLog ?? SyncChangeLog()
-        log.record(SyncChange(kind: kind, path: path, size: size))
+        log.record(SyncChange(kind: kind, path: path, fromPath: fromPath, size: size))
         changeLog = log
     }
 

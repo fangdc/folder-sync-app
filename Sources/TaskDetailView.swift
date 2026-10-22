@@ -914,19 +914,19 @@ private struct ChangeLogView: View {
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.tertiary)
             }
+            .padding(.bottom, 4)
         case .change(let change, let group):
-            HStack(spacing: 6) {
-                Image(systemName: icon(for: change.kind))
-                    .font(.system(size: 9))
+            HStack(spacing: 4) {
+                changeIcon(for: change.kind)
                     .foregroundStyle(color(for: group).opacity(0.85))
-                    .frame(width: 12)
-                Text(change.path)
+                    .frame(width: 11)
+                Text(displayPath(for: change))
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
-                    .help(change.path)
+                    .help(displayPath(for: change))
                 Spacer(minLength: 8)
                 if change.size > 0 {
                     Text(Fmt.bytes(change.size))
@@ -953,9 +953,39 @@ private struct ChangeLogView: View {
     }
 
     private func icon(for kind: SyncChangeKind) -> String {
-        if kind.isFolder { return "folder" }
-        if kind.isLink { return "link" }
-        return "doc"
+        switch kind {
+        case .createdFolder: return "folder.badge.plus"
+        case .modifiedFolder: return "folder.badge.gearshape"
+        case .deletedFolder: return "folder.badge.minus"
+        case .createdLink: return "link"
+        case .createdFile: return "document.badge.plus"
+        case .modifiedFile: return "document.badge.gearshape"
+        case .deletedFile: return "doc"
+        }
+    }
+
+    @ViewBuilder
+    private func changeIcon(for kind: SyncChangeKind) -> some View {
+        if kind == .deletedFile {
+            // 自定义 SF Symbol：放在 Resources/Assets.xcassets 里，由 actool 编译进 Assets.car。
+            // 用法和系统符号一致，.font / .symbolRenderingMode / 前景色都会生效。
+            Image("document.badge.minus")
+                .font(.system(size: 9))
+                .symbolRenderingMode(.monochrome)
+        } else {
+            Image(systemName: icon(for: kind))
+                .font(.system(size: 9))
+        }
+    }
+
+    /// 文件夹改名显示成「旧路径 → 新路径」，普通文件只显示路径。
+    private func displayPath(for change: SyncChange) -> String {
+        if change.kind == .modifiedFolder,
+           let fromPath = change.fromPath,
+           !fromPath.isEmpty {
+            return "\(fromPath) → \(change.path)"
+        }
+        return change.path
     }
 }
 

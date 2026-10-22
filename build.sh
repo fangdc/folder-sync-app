@@ -128,11 +128,16 @@ PYEOF
     # 表现是 App 少了 Assets.car，体积从 3.4M 掉到 1.4M，图标退回系统默认底板。
     # 写临时目录它是允许的，所以先编译到临时目录，再把产物拷进 App 包。
     ICON_TMP="$(mktemp -d "${TMPDIR:-/tmp}/foldersync-icon.XXXXXX")"
+    # 自定义 SF Symbol 放在 Resources/Assets.xcassets 里，和 Icon Composer 工程一起交给 actool。
+    ICON_INPUTS=("$PWD/$BUILD_DIR/iconwork/$APP_NAME.icon")
+    if [ -d "$PWD/Resources/Assets.xcassets" ]; then
+        ICON_INPUTS+=("$PWD/Resources/Assets.xcassets")
+    fi
     if xcrun actool --compile "$ICON_TMP" \
         --platform macosx --minimum-deployment-target "$MIN_MACOS" \
         --app-icon "$APP_NAME" \
         --output-partial-info-plist "$ICON_TMP/partial.plist" \
-        "$PWD/$BUILD_DIR/iconwork/$APP_NAME.icon" >/dev/null 2>&1 \
+        "${ICON_INPUTS[@]}" >/dev/null 2>&1 \
         && [ -f "$ICON_TMP/Assets.car" ] && [ -f "$ICON_TMP/$APP_NAME.icns" ]; then
         cp "$ICON_TMP/Assets.car" "$APP_DIR/Contents/Resources/Assets.car"
         cp "$ICON_TMP/$APP_NAME.icns" "$APP_DIR/Contents/Resources/$APP_NAME.icns"

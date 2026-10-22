@@ -77,6 +77,12 @@ struct SyncPlanItem: Sendable {
     var size: Int64
 }
 
+/// 检测到的一次文件夹改名（目标里的旧路径 → 新路径）。
+struct SyncPlanMove: Sendable, Hashable {
+    var fromRelativePath: String
+    var toRelativePath: String
+}
+
 struct SyncPlan: Sendable {
     var sourcePath: String = ""
     var destinationPath: String = ""
@@ -415,6 +421,167 @@ enum SyncPlanner {
         return plan
     }
 
+    // MARK: - 文件夹改名检测
+
+    /// 找出「源里换了名字、目标里还是旧名字」的文件夹。
+    ///
+    /// 只匹配同一个父目录下、内容结构（文件 / 子目录的相对路径）相同或高度相似的候选。
+    /// 这样改名会被识别成「移动文件夹」，而不是「删掉旧文件夹 + 重新复制所有文件」；
+    /// 内容完全不同的新文件夹不会误判。
+    ///
+    /// - Parameter missingDirectories: 源里有、目标里没有的文件夹相对路径（来自同步计划）。
+    static func folderMoves(source: URL,
+                            destination: URL,
+                            missingDirectories: [String],
+                            options: SyncOptions) -> [SyncPlanMove] {
+        guard !missingDirectories.isEmpty else { return [] }
+        let extras = extraDestinationDirectories(source: source, destination: destination, options: options)
+        guard !extras.isEmpty else { return [] }
+
+        let missing = Set(missingDirectories)
+        let topMissing = missing.filter { !missing.contains(parentPath($0)) }
+        let topExtra = extras.filter { !extras.contains(parentPath($0)) }
+        guard !topMissing.isEmpty, !topExtra.isEmpty else { return [] }
+
+        // 候选太多时不做推断：内容签名比较会变慢，也更容易把普通的新建/保留误配成改名。
+        guard topMissing.count <= 300, topExtra.count <= 300 else { return [] }
+
+        let missingByParent = Dictionary(grouping: topMissing, by: parentPath)
+        let extraByParent = Dictionary(grouping: topExtra, by: parentPath)
+
+        var moves: [SyncPlanMove] = []
+        for (parent, newDirectories) in missingByParent {
+            guard let oldDirectories = extraByParent[parent] else { continue }
+            guard isDirectoryURL(destination.appendingPathComponent(parent)) else { continue }
+
+            var newCandidates: [(path: String, signature: Set<String>)] = []
+            for path in newDirectories.sorted() {
+                guard let signature = contentSignature(of: path, root: source, options: options) else { continue }
+                newCandidates.append((path, signature))
+            }
+            var oldCandidates: [(path: String, signature: Set<String>)] = []
+            for path in oldDirectories.sorted() {
+                guard let signature = contentSignature(of: path, root: destination, options: options) else { continue }
+                oldCandidates.append((path, signature))
+            }
+            guard !newCandidates.isEmpty, !oldCandidates.isEmpty else { continue }
+
+            var usedNew: Set<String> = []
+            var usedOld: Set<String> = []
+
+            // 先按内容签名精确配对：最常见的情况是只改了文件夹名，里面一个字节都没动。
+            let newBySignature = Dictionary(grouping: newCandidates, by: { $0.signature })
+            let oldBySignature = Dictionary(grouping: oldCandidates, by: { $0.signature })
+            for (signature, newItems) in newBySignature {
+                guard let oldItems = oldBySignature[signature] else { continue }
+                let newPaths = newItems.map(\.path).sorted()
+                let oldPaths = oldItems.map(\.path).sorted()
+                for index in 0..<min(newPaths.count, oldPaths.count) {
+                    let newPath = newPaths[index]
+                    let oldPath = oldPaths[index]
+                    moves.append(SyncPlanMove(fromRelativePath: oldPath, toRelativePath: newPath))
+                    usedNew.insert(newPath)
+                    usedOld.insert(oldPath)
+                }
+            }
+
+            // 剩下的多半是「改名同时改了里面的东西」：按内容相似度配对。
+            let remainingNew = newCandidates.filter { !usedNew.contains($0.path) }
+            let remainingOld = oldCandidates.filter { !usedOld.contains($0.path) }
+            for newCandidate in remainingNew {
+                var best: (path: String, score: Double)?
+                for oldCandidate in remainingOld where !usedOld.contains(oldCandidate.path) {
+                    let score = signatureSimilarity(newCandidate.signature, oldCandidate.signature)
+                    if score > (best?.score ?? 0) {
+                        best = (oldCandidate.path, score)
+                    }
+                }
+                guard let best, best.score >= 0.6 else { continue }
+                moves.append(SyncPlanMove(fromRelativePath: best.path, toRelativePath: newCandidate.path))
+                usedNew.insert(newCandidate.path)
+                usedOld.insert(best.path)
+            }
+        }
+
+        return moves.sorted { $0.toRelativePath < $1.toRelativePath }
+    }
+
+    private static func parentPath(_ path: String) -> String {
+        guard let index = path.lastIndex(of: "/") else { return "" }
+        return String(path[..<index])
+    }
+
+    private static func isDirectoryURL(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) && isDirectory.boolValue
+    }
+
+    private static func isFolder(_ url: URL) -> Bool {
+        guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]) else { return false }
+        return values.isDirectory == true && values.isSymbolicLink != true
+    }
+
+    /// 目标里存在、源里同路径不存在的文件夹。
+    private static func extraDestinationDirectories(source: URL,
+                                                    destination: URL,
+                                                    options: SyncOptions) -> Set<String> {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        var enumerationOptions: FileManager.DirectoryEnumerationOptions = [.producesRelativePathURLs]
+        if options.skipHiddenFiles { enumerationOptions.insert(.skipsHiddenFiles) }
+        guard let enumerator = fm.enumerator(at: destination,
+                                             includingPropertiesForKeys: keys,
+                                             options: enumerationOptions) else { return [] }
+        var extras: Set<String> = []
+        while let url = enumerator.nextObject() as? URL {
+            let relative = relativePath(for: url, base: destination.path)
+            guard !relative.isEmpty else { continue }
+            let name = url.lastPathComponent
+            if GlobMatcher.isExcluded(name: name, relativePath: relative, options: options) {
+                if isFolder(url) { enumerator.skipDescendants() }
+                continue
+            }
+            guard isFolder(url) else { continue }
+            if isFolder(source.appendingPathComponent(relative)) { continue }
+            extras.insert(relative)
+        }
+        return extras
+    }
+
+    /// 文件夹内容的「结构签名」：每个后代文件/子目录的相对路径。
+    /// 空文件夹得到空集合；比较时用原始大小/时间之外的结构，改名同时改内容也能匹配。
+    private static func contentSignature(of folderPath: String,
+                                         root: URL,
+                                         options: SyncOptions) -> Set<String>? {
+        let folder = root.appendingPathComponent(folderPath)
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        var enumerationOptions: FileManager.DirectoryEnumerationOptions = [.producesRelativePathURLs]
+        if options.skipHiddenFiles { enumerationOptions.insert(.skipsHiddenFiles) }
+        guard let enumerator = fm.enumerator(at: folder,
+                                             includingPropertiesForKeys: keys,
+                                             options: enumerationOptions) else { return nil }
+        var signature: Set<String> = []
+        while let url = enumerator.nextObject() as? URL {
+            let inner = relativePath(for: url, base: folder.path)
+            guard !inner.isEmpty else { continue }
+            let name = url.lastPathComponent
+            if GlobMatcher.isExcluded(name: name, relativePath: inner, options: options) {
+                if isFolder(url) { enumerator.skipDescendants() }
+                continue
+            }
+            signature.insert((isFolder(url) ? "d:" : "f:") + inner)
+        }
+        return signature
+    }
+
+    private static func signatureSimilarity(_ lhs: Set<String>, _ rhs: Set<String>) -> Double {
+        if lhs.isEmpty && rhs.isEmpty { return 1 }
+        let union = lhs.union(rhs).count
+        guard union > 0 else { return 1 }
+        return Double(lhs.intersection(rhs).count) / Double(union)
+    }
+
     /// 判断目标文件是否需要重新复制。大小一致 + 修改时间在容差内 → 认为相同。
     static func needsCopy(sourceURL: URL,
                           destinationURL: URL,
@@ -451,7 +618,7 @@ enum SyncEngine {
 
         let source = request.source.resolvingSymlinksInPath().standardizedFileURL
         let destination = request.destination.standardizedFileURL
-        let plan = SyncPlanner.makePlan(source: source,
+        var plan = SyncPlanner.makePlan(source: source,
                                         destination: destination,
                                         options: request.options,
                                         requiredRoot: request.destinationRoot)
@@ -466,9 +633,6 @@ enum SyncEngine {
             progress?(SyncProgress(phase: "失败", currentPath: "", completed: 0, total: 0))
             return run
         }
-
-        if plan.permissionDenied { run.needsAuthorization = true }
-        run.messages.append(contentsOf: plan.warnings.prefix(20))
 
         // 目标文件夹本身不存在就创建（例如 /Volumes/Backup/我的项目）
         if !fm.fileExists(atPath: destination.path) {
@@ -487,6 +651,57 @@ enum SyncEngine {
                 return run
             }
         }
+
+        // 先处理文件夹改名：把目标里的旧文件夹整体移成新名字，再重新生成计划。
+        // 这样里面的文件不会被当成「新增」重新复制一遍；空文件夹也会被算作一次修改。
+        if !plan.permissionDenied {
+            let moves = SyncPlanner.folderMoves(source: source,
+                                                destination: destination,
+                                                missingDirectories: plan.directories.map(\.relativePath),
+                                                options: request.options)
+            if !moves.isEmpty {
+                var movedAny = false
+                for move in moves {
+                    let oldURL = destination.appendingPathComponent(move.fromRelativePath)
+                    let newURL = destination.appendingPathComponent(move.toRelativePath)
+                    if fm.fileExists(atPath: newURL.path) { continue }
+                    do {
+                        try fm.createDirectory(at: newURL.deletingLastPathComponent(),
+                                               withIntermediateDirectories: true)
+                        try fm.moveItem(at: oldURL, to: newURL)
+                        run.updated += 1
+                        run.recordChange(.modifiedFolder,
+                                         path: move.toRelativePath,
+                                         fromPath: move.fromRelativePath)
+                        movedAny = true
+                    } catch {
+                        run.failed += 1
+                        if Fmt.isPermissionError(error) { run.needsAuthorization = true }
+                        if run.messages.count < 60 {
+                            run.messages.append("重命名文件夹失败 \(move.fromRelativePath) → \(move.toRelativePath)：\(Fmt.errorText(error))")
+                        }
+                    }
+                }
+                if movedAny {
+                    plan = SyncPlanner.makePlan(source: source,
+                                                destination: destination,
+                                                options: request.options,
+                                                requiredRoot: request.destinationRoot)
+                    if let blockingError = plan.blockingError {
+                        run.outcome = .failed
+                        run.messages.append(blockingError)
+                        run.finishedAt = Date()
+                        progress?(SyncProgress(phase: "失败", currentPath: "", completed: 0, total: 0))
+                        return run
+                    }
+                }
+            }
+        }
+
+        run.destinationPath = plan.destinationPath
+        run.skipped = plan.skippedFiles
+        if plan.permissionDenied { run.needsAuthorization = true }
+        run.messages.append(contentsOf: plan.warnings.prefix(20))
 
         // 注意：这里**不能**用 plan.items —— 它等于 directories + copies + deletions。
         // 删除项由下面单独的「镜像删除」循环处理；如果混进来，每一项都会被当成"要复制的文件"
