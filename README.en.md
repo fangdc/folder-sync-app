@@ -34,8 +34,12 @@ destination folder is touched.
   directory on your local disk and write there.
 - **Recursion guard:** destination inside source, source inside destination, or identical
   paths are all rejected.
-- **Mirror deletions are guarded:** if the source scan finds no files at all, every delete
-  is skipped with a warning, so an unreadable source cannot empty the destination.
+- **Syncing pauses when either folder is unavailable:** nothing is copied or deleted,
+  and the manual sync buttons are disabled.
+- **Mirror deletions are guarded:** files are removed only after the source scan
+  finds real content and completes without errors. An empty source, a mount point
+  containing only system junk such as `.DS_Store`, or an incomplete/permission-
+  denied scan skips every delete.
 - **Deletes go to the Trash first**, and only become permanent when the drive does not
   support the Trash.
 - Copies are written to a temporary file and then atomically replaced, so a failure or
@@ -55,7 +59,7 @@ destination folder is touched.
 
 ## Installation
 
-1. Download `FolderSync-1.1.0.dmg` from [Releases](https://github.com/fangdc/folder-sync-app/releases/latest),
+1. Download `FolderSync-1.2.0.dmg` from [Releases](https://github.com/fangdc/folder-sync-app/releases/latest),
    open it, and drag **FolderSync.app** into the Applications folder.
 
 2. The app is not signed with an Apple Developer certificate, so macOS blocks it the
