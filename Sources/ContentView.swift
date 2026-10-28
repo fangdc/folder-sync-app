@@ -197,7 +197,8 @@ struct ContentView: View {
                     TaskRow(task: task,
                             isSelected: selection.contains(task.id),
                             isRunning: center.runningTaskIDs.contains(task.id),
-                            progress: center.activeProgress[task.id])
+                            progress: center.activeProgress[task.id],
+                            folderAvailabilityRevision: center.folderAvailabilityRevision)
                     // 点选交给 onTapGesture（原来用 Button，但 Button 会吞掉拖动手势）
                     .onTapGesture { handleTap(task) }
                     // 原来这行是 Button；换成手势后补上按钮语义，读屏仍会念成可操作项
@@ -283,7 +284,8 @@ struct ContentView: View {
     @ViewBuilder
     private var detailContent: some View {
         if let id = primarySelectionID, let binding = center.binding(for: id) {
-            TaskDetailView(task: binding)
+            TaskDetailView(task: binding,
+                           folderAvailabilityRevision: center.folderAvailabilityRevision)
                 .id(id)
                 // 任务名与路径交给系统工具栏显示 —— 材质和 SF Symbols 那种原生工具栏
                 // 完全一致，比在内容里自绘一个大标题通透得多
@@ -489,8 +491,11 @@ struct TaskRow: View {
     let isSelected: Bool
     let isRunning: Bool
     let progress: SyncProgress?
+    /// 仅用于让行在文件夹可用性变化时重新渲染；状态本身仍实时读 FileManager。
+    let folderAvailabilityRevision: Int
 
     var body: some View {
+        let _ = folderAvailabilityRevision
         content
             .padding(.vertical, 6)
             .padding(.horizontal, 8)

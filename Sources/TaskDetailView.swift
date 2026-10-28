@@ -86,12 +86,15 @@ private func intervalLabel(_ minutes: Int) -> String {
 struct TaskDetailView: View {
     @EnvironmentObject private var center: SyncCenter
     @Binding var task: SyncTask
+    /// 文件夹可用性版本号：变化时强制详情页重新读取源/目标状态。
+    let folderAvailabilityRevision: Int
     @State private var showHistory = false
 
     private var isRunning: Bool { center.runningTaskIDs.contains(task.id) }
     private var progress: SyncProgress? { center.activeProgress[task.id] }
 
     var body: some View {
+        let _ = folderAvailabilityRevision
         // 用原生的分组表单（.formStyle(.grouped)）：行背景、内边距、行间分隔线、
         // 浅色/深色适配全部由系统负责，和「系统设置」是同一套外观。
         // 底部操作栏照样单独占一行，不浮在表单上。

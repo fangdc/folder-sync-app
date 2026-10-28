@@ -35,6 +35,13 @@ final class SyncCenter: ObservableObject {
     @Published private(set) var previewLoading: Set<UUID> = []
     @Published private(set) var recentRun: SyncRun?
 
+    /// 文件系统变化（挂载/卸载外接盘、删除文件夹）不会自动触发 SwiftUI 更新。
+    /// 这个版本号在文件夹可用性变化时递增，让左侧列表和右侧详情重新读取状态。
+    @Published private(set) var folderAvailabilityRevision = 0
+    private var folderAvailabilityTimer: Timer?
+    private var lastFolderAvailability: [UUID: Bool] = [:]
+    private var folderAvailabilityObservers: [(center: NotificationCenter, token: NSObjectProtocol)] = []
+
 
     /// 是否处于全屏。右栏顶部那条毛玻璃在全屏时不画（见 ContentView.detailPane）。
     @Published private(set) var isFullScreen = false
@@ -97,16 +104,63 @@ final class SyncCenter: ObservableObject {
     func start() {
         LoginItem.refreshIfNeeded()
         scheduleTimer()
+        startFolderAvailabilityMonitor()
         Notifier.shared.prepare()
     }
 
     func stop() {
         checkTimer?.invalidate()
         checkTimer = nil
+        folderAvailabilityTimer?.invalidate()
+        folderAvailabilityTimer = nil
+        for entry in folderAvailabilityObservers {
+            entry.center.removeObserver(entry.token)
+        }
+        folderAvailabilityObservers.removeAll()
         for observer in windowObservers {
             NotificationCenter.default.removeObserver(observer)
         }
         windowObservers.removeAll()
+    }
+
+    // MARK: - 文件夹可用性
+
+    /// 2 秒轮询一次文件夹状态，并额外监听外接盘挂载/卸载和 App 激活，
+    /// 让左侧任务列表不必切换任务就能显示「已暂停」。
+    private func startFolderAvailabilityMonitor() {
+        guard folderAvailabilityTimer == nil else { return }
+        refreshFolderAvailability(force: true)
+
+        folderAvailabilityTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            DispatchQueue.main.async { self?.refreshFolderAvailability() }
+        }
+
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        for name in [NSWorkspace.didMountNotification, NSWorkspace.didUnmountNotification] {
+            let token = workspaceCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.refreshFolderAvailability(force: true)
+            }
+            folderAvailabilityObservers.append((workspaceCenter, token))
+        }
+        let appToken = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshFolderAvailability(force: true)
+        }
+        folderAvailabilityObservers.append((NotificationCenter.default, appToken))
+    }
+
+    private func refreshFolderAvailability(force: Bool = false) {
+        var snapshot: [UUID: Bool] = [:]
+        snapshot.reserveCapacity(tasks.count)
+        for task in tasks {
+            snapshot[task.id] = task.foldersAvailable
+        }
+        guard force || snapshot != lastFolderAvailability else { return }
+        lastFolderAvailability = snapshot
+        folderAvailabilityRevision &+= 1
     }
 
     // MARK: - 窗口接管
