@@ -93,6 +93,8 @@ fi
 
 echo "==> 组装应用包"
 cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
+# 中文界面：让 AppKit 的标准菜单（编辑/显示/窗口/帮助）跟随中文
+[ -d Resources/zh-Hans.lproj ] && cp -R Resources/zh-Hans.lproj "$APP_DIR/Contents/Resources/"
 printf 'APPL????' > "$APP_DIR/Contents/PkgInfo"
 
 # 图标统一由下面的 Icon Composer 工程生成，旧的 FolderSync.icns 不再使用
