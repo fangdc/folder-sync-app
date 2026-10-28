@@ -356,6 +356,22 @@ test("镜像模式安全检查：源为空时不清空终点") {
     check(run.messages.contains { $0.contains("跳过镜像删除") }, "应该给出警告：\(run.messages)")
 }
 
+test("镜像模式安全检查：源只剩 .DS_Store 时也不清空终点") {
+    let source = makeRoot("src")
+    let destination = makeRoot("dst")
+    // 模拟移动硬盘没挂载后留下的空挂载点：里面只有一个系统残留文件。
+    makeFile(source, ".DS_Store", "junk")
+    makeFile(destination, "important.txt", "非常珍贵的数据")
+    // 用户如果关掉了「忽略系统文件」，旧逻辑会把 .DS_Store 当成真实内容，
+    // 从而认为源文件夹被清空，把终点文件全部镜像删除。
+    let run = runSync(source: source,
+                      destination: destination,
+                      options: mirrorOptions { $0.ignoreSystemFiles = false })
+    check(exists(destination.appendingPathComponent("important.txt")), "系统残留文件不应触发镜像删除")
+    checkEqual(run.deleted, 0, "不应删除任何终点文件")
+    check(run.messages.contains { $0.contains("跳过镜像删除") }, "应该给出警告：\(run.messages)")
+}
+
 test("镜像模式：终点目录本身永远不会被删除") {
     let source = makeRoot("src")
     let destination = makeRoot("dst")
@@ -426,11 +442,16 @@ test("终点目录不存在时给出挂载提示") {
     check(run.messages.contains { $0.contains("移动硬盘可能没有挂载") }, "应提示挂载：\(run.messages)")
 }
 
-test("源文件夹不存在时给出明确错误") {
+test("源文件夹不存在时给出明确错误且不改动目标") {
     let destination = makeRoot("dst")
-    let run = runSync(source: URL(fileURLWithPath: "/tmp/根本没有这个目录-\(UUID())"), destination: destination)
+    makeFile(destination, "important.txt", "非常珍贵的数据")
+    let run = runSync(source: URL(fileURLWithPath: "/tmp/根本没有这个目录-\(UUID())"),
+                      destination: destination,
+                      options: mirrorOptions())
     checkEqual(run.outcome, .failed, "应该失败")
     check(run.messages.contains { $0.contains("源文件夹不存在") }, "应提示源不存在：\(run.messages)")
+    check(exists(destination.appendingPathComponent("important.txt")), "源不存在时目标文件必须保留")
+    checkEqual(run.deleted, 0, "源不存在时不应删除目标文件")
 }
 
 test("终点目录会自动创建（含多层）") {
@@ -452,9 +473,14 @@ test("终点目录不存在时绝不自动创建（防止误写到本机磁盘�
     makeFile(source, "a.txt", "a")
     let missingRoot = root.appendingPathComponent("没挂载的硬盘")
     let destination = missingRoot.appendingPathComponent("项目")
-    let run = runSync(source: source, destination: destination, destinationRoot: missingRoot)
+    let run = runSync(source: source,
+                      destination: destination,
+                      destinationRoot: missingRoot,
+                      options: mirrorOptions())
     checkEqual(run.outcome, .failed, "终点目录不存在时应失败")
     check(!exists(missingRoot), "绝不能在本机磁盘上凭空造出终点目录")
+    check(!exists(destination), "绝不能创建目标子目录")
+    checkEqual(run.deleted, 0, "终点不存在时不应有删除")
     check(run.messages.contains { $0.contains("移动硬盘可能没有挂载") }, "应提示挂载：\(run.messages)")
 }
 
@@ -706,6 +732,29 @@ test("任务：终点路径按规则拼接") {
     checkEqual(task.destinationURL.path, "/Volumes/Backup", "关闭子文件夹时直接写入终点目录")
 
     checkEqual(task.displayName, "我的项目", "任务名固定取源文件夹名")
+}
+
+test("任务：未配置时显示～而不是根目录 /") {
+    var task = SyncTask()
+    checkEqual(task.displayName, "～", "未选择源文件夹时应显示～")
+    task.sourcePath = "/"
+    checkEqual(task.displayName, "～", "空路径被解析成根目录时也不能显示 /")
+}
+
+test("任务：源或目标文件夹缺失时不可同步") {
+    let source = makeRoot("src")
+    let root = makeRoot("dst")
+    var task = SyncTask()
+    task.sourcePath = source.path
+    task.destinationRoot = root.path
+    check(task.foldersAvailable, "源和目标都存在时应允许同步")
+
+    task.destinationRoot = root.appendingPathComponent("没挂载").path
+    check(!task.foldersAvailable, "目标文件夹不存在时不允许同步")
+
+    task.destinationRoot = root.path
+    task.sourcePath = source.appendingPathComponent("没挂载").path
+    check(!task.foldersAvailable, "源文件夹不存在时不允许同步")
 }
 
 test("任务：排除规则会去掉空行和注释") {

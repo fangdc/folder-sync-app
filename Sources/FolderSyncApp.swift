@@ -230,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
                                   : "未配置源文件夹或目标文件夹"))
         menu.addItem(disabledItem(task.enabled ? task.schedule.summary : "任务已暂停"))
         menu.addItem(.separator())
-        menu.addItem(menuItem("立即同步", #selector(syncTaskNow(_:)), represented: task.id))
+        menu.addItem(menuItem("立即同步", #selector(syncTaskNow(_:)),
+                              enabled: task.foldersAvailable, represented: task.id))
         menu.addItem(menuItem("预览改动", #selector(previewTask(_:)), represented: task.id))
         let toggle = menuItem("启用任务", #selector(toggleTask(_:)), represented: task.id)
         toggle.state = task.enabled ? .on : .off

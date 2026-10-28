@@ -290,11 +290,17 @@ enum SyncPlanner {
         var copies: [SyncPlanItem] = []
         var skipped = 0
         var sourceFileCount = 0
+        // 只统计「真正的内容文件」：不管用户是否关闭了「忽略系统文件」，
+        // .DS_Store / .VolumeIcon.icns 这类挂载点残留都不算源内容。
+        // 移动硬盘没挂载时，/Volumes/xxx 可能只剩一个带 .DS_Store 的空目录，
+        // 不能因为这一个文件就允许镜像删除。
+        var sourceRealFileCount = 0
         var sourceByteCount: Int64 = 0
         var bytesToCopy: Int64 = 0
         var warnings: [String] = []
         var unresolvedEntries = 0
         var permissionDenied = false
+        var scanHadErrors = false
 
         let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
                                       .fileSizeKey, .contentModificationDateKey]
@@ -307,6 +313,7 @@ enum SyncPlanner {
                                        options: enumerationOptions,
                                        errorHandler: { url, error in
             if Fmt.isPermissionError(error) { permissionDenied = true }
+            scanHadErrors = true
             warnings.append("无法读取 \(Fmt.prettyPath(url.path))：\(Fmt.errorText(error))")
             return true
         })
@@ -320,6 +327,15 @@ enum SyncPlanner {
                 let isSymlink = values?.isSymbolicLink ?? false
                 let isDir = values?.isDirectory ?? false
                 let destinationItem = destination.appendingPathComponent(relative)
+                // 系统残留不只看文件名，也要看路径里是否经过 .Spotlight-V100、
+                // .Trashes 这类系统目录 —— 空挂载点里可能只剩这些目录和文件。
+                let isSystemItem = relative.split(separator: "/").contains { component in
+                    let part = String(component)
+                    return SyncOptions.systemFileNames.contains(part)
+                        || part == ".localized"
+                        || part.hasPrefix("._")
+                        || part.hasPrefix(SyncOptions.temporaryPrefix)
+                }
 
                 if GlobMatcher.isExcluded(name: name, relativePath: relative, options: options) {
                     if isDir, !isSymlink { enumerator.skipDescendants() }
@@ -331,6 +347,7 @@ enum SyncPlanner {
 
                 if isSymlink {
                     sourceFileCount += 1
+                    if !isSystemItem { sourceRealFileCount += 1 }
                     if fm.fileExists(atPath: destinationItem.path) {
                         skipped += 1
                     } else {
@@ -350,6 +367,7 @@ enum SyncPlanner {
                 }
 
                 sourceFileCount += 1
+                if !isSystemItem { sourceRealFileCount += 1 }
                 let size = Int64(values?.fileSize ?? 0)
                 sourceByteCount += size
                 if needsCopy(sourceURL: url,
@@ -364,17 +382,35 @@ enum SyncPlanner {
                     skipped += 1
                 }
             }
+        } else {
+            scanHadErrors = true
         }
 
         if unresolvedEntries > 0 {
+            scanHadErrors = true
             warnings.append("有 \(unresolvedEntries) 个条目无法确定相对路径，已跳过。")
+        }
+
+        // 扫描期间源目录被卸载/移除：直接判定为不可同步，避免把「空源」当成真实状态。
+        var sourceStillDirectory: ObjCBool = false
+        if !fm.fileExists(atPath: source.path, isDirectory: &sourceStillDirectory)
+            || !sourceStillDirectory.boolValue {
+            plan.blockingError = "源文件夹在扫描过程中不可用：\(Fmt.prettyPath(source.path))"
+            return plan
         }
 
         // ---- 镜像模式：找出目标文件夹里多出来的内容 ----
         var deletions: [SyncPlanItem] = []
         if options.mode == .mirror {
-            if sourceFileCount == 0 {
-                warnings.append("源文件夹里没有扫描到任何文件，为避免误删已跳过镜像删除。")
+            // 只有「扫描到了真实内容、且扫描过程没有错误」才允许镜像删除。
+            // 移动硬盘没挂载时，源路径可能还残留挂载点目录（甚至带 .DS_Store），
+            // 不能把这种空壳当成用户真的清空了源文件夹，否则会把目标文件全删光。
+            let sourceIsSafeForMirror = sourceFileCount > 0
+                && sourceRealFileCount > 0
+                && !scanHadErrors
+                && !permissionDenied
+            if !sourceIsSafeForMirror {
+                warnings.append("源文件夹为空、不可读或扫描不完整，为避免误删已跳过镜像删除。")
             } else {
                 let destinationEnumerator = fm.enumerator(at: destination,
                                                           includingPropertiesForKeys: keys,
@@ -634,6 +670,28 @@ enum SyncEngine {
             return run
         }
 
+        // 硬性前置条件：计划生成后、写入任何内容之前再确认一次。
+        // 源盘在计划阶段被拔掉，或目标盘刚好卸载时，绝不能继续创建目录/删除文件。
+        var sourceIsDirectoryNow: ObjCBool = false
+        guard fm.fileExists(atPath: source.path, isDirectory: &sourceIsDirectoryNow),
+              sourceIsDirectoryNow.boolValue else {
+            run.outcome = .failed
+            run.messages.append("源文件夹不存在：\(Fmt.prettyPath(source.path))。本次未同步，目标文件没有被改动。")
+            run.finishedAt = Date()
+            progress?(SyncProgress(phase: "失败", currentPath: "", completed: 0, total: 0))
+            return run
+        }
+        let targetRoot = request.destinationRoot.standardizedFileURL
+        var targetRootIsDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: targetRoot.path, isDirectory: &targetRootIsDirectory),
+              targetRootIsDirectory.boolValue else {
+            run.outcome = .failed
+            run.messages.append("目标文件夹不存在：\(Fmt.prettyPath(targetRoot.path))（移动硬盘可能没有挂载）。本次未同步。")
+            run.finishedAt = Date()
+            progress?(SyncProgress(phase: "失败", currentPath: "", completed: 0, total: 0))
+            return run
+        }
+
         // 目标文件夹本身不存在就创建（例如 /Volumes/Backup/我的项目）
         if !fm.fileExists(atPath: destination.path) {
             do {
@@ -785,6 +843,21 @@ enum SyncEngine {
 
         // ---- 镜像删除 ----
         if !cancelled {
+            // 删除前最后一道闸：复制期间源盘/目标盘可能被拔掉。
+            // 只要任意一端不可用，就停止删除并标记失败，绝不清空目标。
+            var sourceStillThere: ObjCBool = false
+            var targetRootStillThere: ObjCBool = false
+            let targetRoot = request.destinationRoot.standardizedFileURL
+            if !fm.fileExists(atPath: source.path, isDirectory: &sourceStillThere)
+                || !sourceStillThere.boolValue
+                || !fm.fileExists(atPath: targetRoot.path, isDirectory: &targetRootStillThere)
+                || !targetRootStillThere.boolValue {
+                run.outcome = .failed
+                run.messages.append("源文件夹或目标文件夹已不可用，已停止同步；没有删除任何目标文件。")
+                run.finishedAt = Date()
+                progress?(SyncProgress(phase: "失败", currentPath: "", completed: state.completed, total: totalItems))
+                return run
+            }
             state.phase = "清理目标文件夹里多余的文件"
             report(force: true)
             for item in plan.deletions {

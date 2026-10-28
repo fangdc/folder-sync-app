@@ -189,17 +189,29 @@ struct TaskDetailView: View {
         } header: {
             Text("文件夹")
         } footer: {
-            destinationFooter
+            folderFooter
         }
     }
 
 
     @ViewBuilder
-    private var destinationFooter: some View {
-        let root = task.destinationRootURL
-        if !task.destinationRoot.isEmpty, !FileManager.default.fileExists(atPath: root.path) {
-            // 盘没挂载是要拦住用户的信息，用警告样式压过普通说明
-            Label("目标文件夹当前不存在，移动硬盘可能没有挂载。同步会失败并记录下来。",
+    private var folderFooter: some View {
+        let fm = FileManager.default
+        var sourceIsDirectory: ObjCBool = false
+        let sourceAvailable = !task.sourcePath.isEmpty
+            && fm.fileExists(atPath: task.sourceURL.path, isDirectory: &sourceIsDirectory)
+            && sourceIsDirectory.boolValue
+        var rootIsDirectory: ObjCBool = false
+        let rootAvailable = !task.destinationRoot.isEmpty
+            && fm.fileExists(atPath: task.destinationRootURL.path, isDirectory: &rootIsDirectory)
+            && rootIsDirectory.boolValue
+        if !task.sourcePath.isEmpty, !sourceAvailable {
+            // 源盘没挂载是最危险的情况：不能让镜像同步把目标当成「源已清空」。
+            Label("暂停同步！源文件夹不存在，请查看移动存储设备是否已挂载。",
+                  systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        } else if !task.destinationRoot.isEmpty, !rootAvailable {
+            Label("暂停同步！目标文件夹不存在，请查看移动存储设备是否已挂载。",
                   systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
         } else {
@@ -357,6 +369,20 @@ struct TaskDetailView: View {
     // 玻璃胶囊（和右下角那两个按钮同一个做法）。
     // 必须自绘胶囊：系统玻璃按钮样式的高度由 controlSize 决定，无法精确对齐别处。
 
+    /// 源/目标文件夹缺失、未配置或正在同步时，底部两个按钮都不可用。
+    private var syncDisabled: Bool {
+        isRunning || !task.isConfigured || !task.foldersAvailable
+    }
+
+    private var previewDisabled: Bool {
+        syncDisabled || center.previewLoading.contains(task.id)
+    }
+
+    /// 置灰时的文字颜色：比 45% 整体透明度更深，浅色/深色背景下都能看清。
+    private var disabledLabelColor: Color {
+        Color.primary.opacity(0.55)
+    }
+
     private var actionBar: some View {
         GlassGroup(spacing: 10) {
             VStack(alignment: .trailing, spacing: 10) {
@@ -383,27 +409,30 @@ struct TaskDetailView: View {
                     } label: {
                         Label("预览改动", systemImage: "doc.text.magnifyingglass")
                             .font(.system(size: 13))
+                            .foregroundStyle(previewDisabled ? disabledLabelColor : Color.primary)
                             .padding(.horizontal, 16)
                             .frame(height: 32)
-                            .glassSurface(Capsule(), interactive: true)
+                            .glassSurface(Capsule(), interactive: !previewDisabled)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isRunning || !task.isConfigured || center.previewLoading.contains(task.id))
-                    .opacity(isRunning || !task.isConfigured ? 0.45 : 1)
+                    .disabled(previewDisabled)
+                    .help(task.foldersAvailable ? "预览改动" : "源文件夹或目标文件夹不存在，已暂停同步")
 
                     Button {
                         center.syncNow(task.id)
                     } label: {
                         Label("立即同步", systemImage: "arrow.triangle.2.circlepath")
                             .font(.system(size: 13))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(syncDisabled ? disabledLabelColor : .white)
                             .padding(.horizontal, 16)
                             .frame(height: 32)
-                            .glassSurface(Capsule(), tint: .accentColor, interactive: true)
+                            .glassSurface(Capsule(),
+                                          tint: syncDisabled ? nil : Color.accentColor,
+                                          interactive: !syncDisabled)
                     }
                     .buttonStyle(.plain)
-                    .disabled(isRunning || !task.isConfigured)
-                    .opacity(isRunning || !task.isConfigured ? 0.45 : 1)
+                    .disabled(syncDisabled)
+                    .help(task.foldersAvailable ? "立即同步" : "源文件夹或目标文件夹不存在，已暂停同步")
                 }
             }
         }

@@ -155,7 +155,10 @@ struct ContentView: View {
     /// 样式跟右栏底部的「预览改动」一致：胶囊 + 液态玻璃 + icon + 文字。
     /// 用 overlay 浮在列表上而不是另占一行 —— 列表内容会从这层玻璃下面滚过去。
     private var syncAllButton: some View {
-        let disabled = center.tasks.isEmpty || center.isSyncingAnything
+        let hasRunnableTask = center.tasks.contains {
+            $0.enabled && $0.isConfigured && $0.foldersAvailable
+        }
+        let disabled = center.tasks.isEmpty || center.isSyncingAnything || !hasRunnableTask
         return Button {
             center.syncAll()
         } label: {
@@ -163,15 +166,18 @@ struct ContentView: View {
                 .font(.system(size: 13, weight: .medium))
                 // 玻璃着色后系统不会自动把标签转成白字（实测蓝底上还是近黑的 label 色），
                 // 这里显式指定，等价于 .glassProminent 的观感。
-                .foregroundStyle(.white)
+                .foregroundStyle(disabled ? Color.primary.opacity(0.55) : .white)
                 .frame(maxWidth: .infinity)
                 .frame(height: 32)
-                .glassSurface(Capsule(), tint: .accentColor, interactive: true)
+                .glassSurface(Capsule(),
+                              tint: disabled ? nil : Color.accentColor,
+                              interactive: !disabled)
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .opacity(disabled ? 0.45 : 1)
-        .help("立即同步全部任务（⌘R）")
+        .help(hasRunnableTask
+              ? "立即同步全部任务（⌘R）"
+              : "没有可同步的任务：请检查任务是否启用、源文件夹或目标文件夹是否存在")
         .padding(.bottom, 10)
     }
 
@@ -212,6 +218,7 @@ struct ContentView: View {
                     // 整个选中集合，否则只作用于它自己（macOS 的惯常行为）。
                     .contextMenu {
                         Button(contextSyncTitle(task)) { syncContextTargets(task) }
+                            .disabled(!contextTargets(task).contains { $0.foldersAvailable })
                         Button(contextToggleTitle(task)) { toggleContextTargets(task) }
                         Divider()
                         Button("删除任务", role: .destructive) {
@@ -370,7 +377,15 @@ struct ContentView: View {
     }
 
     private func syncContextTargets(_ task: SyncTask) {
-        for target in contextTargets(task) { center.syncNow(target.id) }
+        let targets = contextTargets(task)
+        let runnable = targets.filter { $0.foldersAvailable }
+        if runnable.count < targets.count {
+            center.showToast("有 \(targets.count - runnable.count) 个任务的源文件夹或目标文件夹不存在，已跳过。",
+                             kind: .warning)
+        }
+        for target in runnable {
+            center.syncNow(target.id)
+        }
     }
 
     private func toggleContextTargets(_ task: SyncTask) {
@@ -489,13 +504,27 @@ struct TaskRow: View {
 
     // 只保留一行：图标 + 文件夹名。
     // 目标路径、「多久前 · 新增/跳过」这些明细都收进右栏详情，列表保持干净。
-    // 唯一的例外是「未配置」和同步进度 —— 一个是出错状态、一个是进行中的反馈，
-    // 都属于不给提示就会让人困惑的信息，所以并到同一行的右侧，不再占第二行。
+    // 唯一的例外是「未配置 / 已暂停 / 未启用」和同步进度 —— 都属于不给提示
+    // 就会让人困惑的信息，所以并到同一行的右侧，不再占第二行。
+
+    /// 只有「任务启用 + 配置完整 + 文件夹当前不可用」才算因缺盘暂停；
+    /// 用户主动关闭的任务显示「未启用」，不改橙色图标。
+    private var folderUnavailable: Bool {
+        task.isConfigured && task.enabled && !task.foldersAvailable
+    }
+
+    /// 未启用用灰色实心；未配置保持灰色线框，和「还没选文件夹」的状态一致。
+    private var folderIconActive: Bool {
+        task.isConfigured && task.enabled
+    }
+
     private var content: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                Image(systemName: task.enabled ? "folder.fill" : "folder")
-                    .foregroundStyle(task.enabled ? Color.accentColor : Color.secondary)
+                Image(systemName: task.isConfigured ? "folder.fill" : "folder")
+                    .foregroundStyle(folderUnavailable
+                                     ? Color.orange
+                                     : (folderIconActive ? Color.accentColor : Color.secondary))
                     .font(.system(size: 12))
                 Text(task.displayName)
                     .font(.system(size: 13, weight: .medium))
@@ -505,15 +534,19 @@ struct TaskRow: View {
                 if !task.isConfigured {
                     Text("未配置")
                         .font(.system(size: 10))
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(.secondary)
                 } else if isRunning {
                     ProgressView()
                         .controlSize(.small)
                         .scaleEffect(0.6)
                 } else if !task.enabled {
-                    Text("已暂停")
+                    Text("未启用")
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
+                } else if !task.foldersAvailable {
+                    Text("已暂停")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.orange)
                 }
             }
 

@@ -293,6 +293,13 @@ final class SyncCenter: ObservableObject {
             showToast("这个任务还没选好源文件夹和目标文件夹。", kind: .warning)
             return
         }
+        // 源/目标文件夹任意一端不存在时，只提示异常，不创建运行记录也不碰目标文件。
+        guard task.foldersAvailable else {
+            if trigger == "manual" {
+                showToast("\(task.displayName)：源文件夹或目标文件夹不存在，已暂停同步。", kind: .warning)
+            }
+            return
+        }
 
         let request = SyncRequest(source: task.sourceURL,
                                   destination: task.destinationURL,
@@ -322,7 +329,13 @@ final class SyncCenter: ObservableObject {
     }
 
     func syncAll(trigger: String = "manual") {
-        for task in tasks where task.enabled && task.isConfigured {
+        let candidates = tasks.filter { $0.enabled && $0.isConfigured }
+        let runnable = candidates.filter(\.foldersAvailable)
+        let blocked = candidates.filter { !$0.foldersAvailable }
+        if trigger == "manual", !blocked.isEmpty {
+            showToast("有 \(blocked.count) 个任务的源文件夹或目标文件夹不存在，已暂停同步。", kind: .warning)
+        }
+        for task in runnable {
             syncNow(task.id, trigger: trigger)
         }
     }

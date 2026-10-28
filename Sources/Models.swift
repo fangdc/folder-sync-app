@@ -203,12 +203,36 @@ extension SyncTask {
     }
 
     /// 任务名固定取源文件夹名 —— 不提供自定义名称，少一个要填的字段。
+    /// 还没选源文件夹时显示「～」，避免空路径被算成根目录 `/`。
     var displayName: String {
+        guard !sourcePath.isEmpty else { return "～" }
         let derived = sourceURL.lastPathComponent
-        return derived.isEmpty ? "未命名任务" : derived
+        if derived.isEmpty || derived == "/" { return "～" }
+        return derived
     }
 
     var isConfigured: Bool { !sourcePath.isEmpty && !destinationRoot.isEmpty }
+
+    /// 源文件夹当前是否真实存在且是目录（移动硬盘没挂载时为 false）。
+    var sourceFolderAvailable: Bool {
+        guard !sourcePath.isEmpty else { return false }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// 用户选的目标根文件夹是否存在；目标子文件夹允许第一次同步时创建。
+    var destinationFolderAvailable: Bool {
+        guard !destinationRoot.isEmpty else { return false }
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: destinationRootURL.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// 源和目标都可用才允许同步；任意一端缺失时只提示异常，不进行同步。
+    var foldersAvailable: Bool {
+        sourceFolderAvailable && destinationFolderAvailable
+    }
 
     var exclusionPatterns: [String] {
         excludePatterns
